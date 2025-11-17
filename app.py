@@ -299,8 +299,13 @@ def health():
     return jsonify({"status": True, "message": "OK"}), 200
 
 
-@app.route("/api/extract", methods=["POST"])
+@app.route("/api/extract", methods=["POST", "OPTIONS"])
 def api_extract():
+    # Handle CORS preflight
+    if request.method == "OPTIONS":
+        # Just tell the browser "ok, you can POST here"
+        return "", 200
+
     """
     Accepts ONE file under form field name 'file'.
     Returns the same dict that extract_receipt_to_object() creates.
