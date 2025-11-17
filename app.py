@@ -1,6 +1,6 @@
 import os
 import json
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, jsonify
 from werkzeug.utils import secure_filename
 
 from receipt_extractor import extract_receipt_to_object  # <-- use object version
@@ -290,8 +290,65 @@ def index():
     return render_template_string(HTML_TEMPLATE, json_result=json_result, error=error)
 
 
-if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# ================
+#  API ENDPOINTS
+# ================
 
+@app.route("/api/health", methods=["GET"])
+def health():
+    return jsonify({"status": True, "message": "OK"}), 200
+
+
+@app.route("/api/extract", methods=["POST"])
+def api_extract():
+    """
+    Accepts ONE file under form field name 'file'.
+    Returns the same dict that extract_receipt_to_object() creates.
+    """
+    if "file" not in request.files:
+        return jsonify({
+            "status": False,
+            "message": "No file part in request (expected form field 'file')",
+            "data": {},
+            "status_code": 400
+        }), 400
+
+    file = request.files.get("file")
+
+    if not file or file.filename == "":
+        return jsonify({
+            "status": False,
+            "message": "No file selected",
+            "data": {},
+            "status_code": 400
+        }), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({
+            "status": False,
+            "message": "File type not allowed. Use pdf/jpg/jpeg/png.",
+            "data": {},
+            "status_code": 400
+        }), 400
+
+    filename = secure_filename(file.filename)
+    ext = filename.rsplit(".", 1)[1].lower()
+
+    save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    file.save(save_path)
+
+    try:
+        result = extract_receipt_to_object(save_path, ext)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({
+            "status": False,
+            "message": f"Error processing file: {str(e)}",
+            "data": {},
+            "status_code": 500
+        }), 500
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))  # Railway usually sets PORT (often 8080)
+    app.run(host="0.0.0.0", port=port)
