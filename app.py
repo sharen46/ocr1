@@ -10,39 +10,7 @@ app = Flask(__name__)
 STATS_FILE = os.path.join(UPLOAD_FOLDER, "stats.json")
 
 
-def load_stats():
-    """Read stats.json if exists, otherwise return default counters."""
-    try:
-        if os.path.exists(STATS_FILE):
-            with open(STATS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # make sure keys exist
-                return {
-                    "total_files": int(data.get("total_files", 0)),
-                    "success": int(data.get("success", 0)),
-                    "failed": int(data.get("failed", 0)),
-                }
-    except Exception:
-        pass
 
-    return {"total_files": 0, "success": 0, "failed": 0}
-
-
-def bump_stats(success: bool):
-    """Increment counters and save back to stats.json."""
-    stats = load_stats()
-    stats["total_files"] += 1
-    if success:
-        stats["success"] += 1
-    else:
-        stats["failed"] += 1
-
-    try:
-        with open(STATS_FILE, "w", encoding="utf-8") as f:
-            json.dump(stats, f, indent=2)
-    except Exception:
-        # Ignore write errors to avoid breaking API
-        pass
 
 
 @app.after_request
