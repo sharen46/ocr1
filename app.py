@@ -7,7 +7,7 @@ from receipt_extractor import extract_receipt_to_object  # <-- use object versio
 
 app = Flask(__name__)
 
-STATS_FILE = os.path.join(UPLOAD_FOLDER, "stats.json")
+
 
 
 
