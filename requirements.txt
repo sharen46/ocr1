@@ -1,0 +1,6 @@
+flask
+pdfplumber
+pillow
+pytesseract
+pdf2image
+werkzeug
