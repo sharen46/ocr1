@@ -27,6 +27,50 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg"}
+STATS_FILE = os.path.join(UPLOAD_FOLDER, "stats.json")
+
+
+def load_stats():
+    """Read stats.json if exists, otherwise return default counters."""
+    try:
+        if os.path.exists(STATS_FILE):
+            with open(STATS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {
+                    "total_files": int(data.get("total_files", 0)),
+                    "success": int(data.get("success", 0)),
+                    "failed": int(data.get("failed", 0)),
+                }
+    except Exception:
+        pass
+
+    return {"total_files": 0, "success": 0, "failed": 0}
+
+
+def bump_stats(success: bool):
+    """Increment counters and save back to stats.json."""
+    stats = load_stats()
+    stats["total_files"] += 1
+    if success:
+        stats["success"] += 1
+    else:
+        stats["failed"] += 1
+
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(stats, f, indent=2)
+    except Exception:
+        # don't break API if stats save fails
+        pass
+
+
+@app.after_request
+def add_cors_headers(response):
+    """Allow your Yii / browser frontend to call the API."""
+    response.headers["Access-Control-Allow-Origin"] = "*"  # later put your domain here
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
 
 
 def allowed_file(filename: str) -> bool:
@@ -304,6 +348,179 @@ def index():
 
     return render_template_string(HTML_TEMPLATE, json_result=json_result, error=error)
 
+@app.route("/api/extract", methods=["POST", "OPTIONS"])
+def api_extract():
+    # Handle CORS preflight
+    if request.method == "OPTIONS":
+        return "", 200
+
+    if "file" not in request.files:
+        return jsonify({
+            "status": False,
+            "message": "No file part in request",
+            "data": {},
+            "status_code": 400,
+        }), 400
+
+    file = request.files["file"]
+
+    if file.filename == "":
+        return jsonify({
+            "status": False,
+            "message": "No file selected",
+            "data": {},
+            "status_code": 400,
+        }), 400
+
+    filename = secure_filename(file.filename)
+    if "." not in filename or filename.rsplit(".", 1)[1].lower() not in ALLOWED_EXTENSIONS:
+        return jsonify({
+            "status": False,
+            "message": "Invalid file type. Allowed: pdf, png, jpg, jpeg",
+            "data": {},
+            "status_code": 400,
+        }), 400
+
+    ext = filename.rsplit(".", 1)[1].lower()
+    save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    file.save(save_path)
+
+    try:
+        result = extract_receipt_to_object(save_path, ext)
+        # 🔢 update stats
+        bump_stats(bool(result.get("status")))
+        return jsonify(result), 200
+    except Exception as e:
+        bump_stats(False)
+        return jsonify({
+            "status": False,
+            "message": f"Error processing file: {e}",
+            "data": {},
+            "status_code": 500,
+        }), 500
+
+@app.route("/api/stats", methods=["GET"])
+def api_stats():
+    stats = load_stats()
+    return jsonify({"status": True, "data": stats}), 200
+
+
+@app.route("/stats", methods=["GET"])
+def stats_page():
+    stats = load_stats()
+    # tiny helper so we can use stats.total_files in the template
+    StatsObj = type("StatsObj", (), stats)
+    return render_template_string("""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>OCR API Stats</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+      background: radial-gradient(circle at top, #0f172a 0, #020617 55%);
+      color: #e5e7eb;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .shell {
+      width: 100%;
+      max-width: 640px;
+      padding: 24px;
+    }
+    .card {
+      background: rgba(15,23,42,0.96);
+      border-radius: 18px;
+      padding: 20px 22px 22px;
+      box-shadow: 0 20px 45px rgba(0,0,0,0.6);
+      border: 1px solid rgba(148,163,184,0.3);
+    }
+    h1 {
+      margin: 0 0 4px;
+      font-size: 22px;
+      letter-spacing: 0.04em;
+    }
+    p.sub {
+      margin: 0 0 16px;
+      font-size: 13px;
+      color: #9ca3af;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 10px;
+    }
+    .metric {
+      background: rgba(15,23,42,0.9);
+      border-radius: 14px;
+      padding: 12px 14px;
+      border: 1px solid rgba(55,65,81,0.9);
+    }
+    .metric-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #9ca3af;
+      margin-bottom: 4px;
+    }
+    .metric-value {
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .metric.total .metric-value { color: #e5e7eb; }
+    .metric.ok    .metric-value { color: #4ade80; }
+    .metric.fail  .metric-value { color: #f97373; }
+    .footer {
+      margin-top: 14px;
+      font-size: 11px;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+    a.link {
+      color: #60a5fa;
+      text-decoration: none;
+      font-size: 11px;
+    }
+    a.link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <div class="card">
+      <h1>OCR API Stats</h1>
+      <p class="sub">Live counters for receipts processed by this service.</p>
+      <div class="grid">
+        <div class="metric total">
+          <div class="metric-label">Total Files</div>
+          <div class="metric-value">{{ stats.total_files }}</div>
+        </div>
+        <div class="metric ok">
+          <div class="metric-label">Success</div>
+          <div class="metric-value">{{ stats.success }}</div>
+        </div>
+        <div class="metric fail">
+          <div class="metric-label">Failed</div>
+          <div class="metric-value">{{ stats.failed }}</div>
+        </div>
+      </div>
+      <div class="footer">
+        <span>Updated whenever a file is processed.</span>
+        <a href="/api/stats" class="link">View JSON</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+    """, stats=StatsObj())
 
 # =================
 #   API ENDPOINTS
