@@ -348,56 +348,7 @@ def index():
 
     return render_template_string(HTML_TEMPLATE, json_result=json_result, error=error)
 
-@app.route("/api/extract", methods=["POST", "OPTIONS"])
-def api_extract():
-    # Handle CORS preflight
-    if request.method == "OPTIONS":
-        return "", 200
 
-    if "file" not in request.files:
-        return jsonify({
-            "status": False,
-            "message": "No file part in request",
-            "data": {},
-            "status_code": 400,
-        }), 400
-
-    file = request.files["file"]
-
-    if file.filename == "":
-        return jsonify({
-            "status": False,
-            "message": "No file selected",
-            "data": {},
-            "status_code": 400,
-        }), 400
-
-    filename = secure_filename(file.filename)
-    if "." not in filename or filename.rsplit(".", 1)[1].lower() not in ALLOWED_EXTENSIONS:
-        return jsonify({
-            "status": False,
-            "message": "Invalid file type. Allowed: pdf, png, jpg, jpeg",
-            "data": {},
-            "status_code": 400,
-        }), 400
-
-    ext = filename.rsplit(".", 1)[1].lower()
-    save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    file.save(save_path)
-
-    try:
-        result = extract_receipt_to_object(save_path, ext)
-        # 🔢 update stats
-        bump_stats(bool(result.get("status")))
-        return jsonify(result), 200
-    except Exception as e:
-        bump_stats(False)
-        return jsonify({
-            "status": False,
-            "message": f"Error processing file: {e}",
-            "data": {},
-            "status_code": 500,
-        }), 500
 
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
@@ -535,55 +486,52 @@ def health():
 def api_extract():
     # Handle CORS preflight
     if request.method == "OPTIONS":
-        # Just tell the browser "ok, you can POST here"
         return "", 200
 
-    """
-    Accepts ONE file under form field name 'file'.
-    Returns the same dict that extract_receipt_to_object() creates.
-    """
     if "file" not in request.files:
         return jsonify({
             "status": False,
-            "message": "No file part in request (expected form field 'file')",
+            "message": "No file part in request",
             "data": {},
-            "status_code": 400
+            "status_code": 400,
         }), 400
 
-    file = request.files.get("file")
+    file = request.files["file"]
 
-    if not file or file.filename == "":
+    if file.filename == "":
         return jsonify({
             "status": False,
             "message": "No file selected",
             "data": {},
-            "status_code": 400
-        }), 400
-
-    if not allowed_file(file.filename):
-        return jsonify({
-            "status": False,
-            "message": "File type not allowed. Use pdf/jpg/jpeg/png.",
-            "data": {},
-            "status_code": 400
+            "status_code": 400,
         }), 400
 
     filename = secure_filename(file.filename)
-    ext = filename.rsplit(".", 1)[1].lower()
+    if "." not in filename or filename.rsplit(".", 1)[1].lower() not in ALLOWED_EXTENSIONS:
+        return jsonify({
+            "status": False,
+            "message": "Invalid file type. Allowed: pdf, png, jpg, jpeg",
+            "data": {},
+            "status_code": 400,
+        }), 400
 
+    ext = filename.rsplit(".", 1)[1].lower()
     save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
     file.save(save_path)
 
     try:
         result = extract_receipt_to_object(save_path, ext)
+        bump_stats(bool(result.get("status")))
         return jsonify(result), 200
     except Exception as e:
+        bump_stats(False)
         return jsonify({
             "status": False,
-            "message": f"Error processing file: {str(e)}",
+            "message": f"Error processing file: {e}",
             "data": {},
-            "status_code": 500
+            "status_code": 500,
         }), 500
+
 
 
 if __name__ == "__main__":
