@@ -7,6 +7,15 @@ from receipt_extractor import extract_receipt_to_object  # <-- use object versio
 
 app = Flask(__name__)
 
+@app.after_request
+def add_cors_headers(response):
+    # allow your admin site to call this API from the browser
+    response.headers["Access-Control-Allow-Origin"] = "*"  # or "https://your-admin-domain.com"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
