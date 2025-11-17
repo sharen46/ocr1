@@ -290,9 +290,9 @@ def index():
     return render_template_string(HTML_TEMPLATE, json_result=json_result, error=error)
 
 
-# ================
-#  API ENDPOINTS
-# ================
+# =================
+#   API ENDPOINTS
+# =================
 
 @app.route("/api/health", methods=["GET"])
 def health():
@@ -350,5 +350,5 @@ def api_extract():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))  # Railway usually sets PORT (often 8080)
+    port = int(os.environ.get("PORT", 8080))  # Railway uses PORT env (8080 there)
     app.run(host="0.0.0.0", port=port)
