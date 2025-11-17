@@ -7,20 +7,9 @@ from receipt_extractor import extract_receipt_to_object  # <-- use object versio
 
 app = Flask(__name__)
 
-
-
-
-
-
-
-@app.after_request
-def add_cors_headers(response):
-    # allow your admin site to call this API from the browser
-    response.headers["Access-Control-Allow-Origin"] = "*"  # or "https://your-admin-domain.com"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    return response
-
+# ----------------------
+#  Upload & basic config
+# ----------------------
 
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -28,10 +17,133 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg"}
 
+# ----------------------
+#  Stats (stored in uploads/stats.json)
+# ----------------------
+
+STATS_FILE = os.path.join(UPLOAD_FOLDER, "stats.json")
+
+
+def _load_stats():
+    """Read stats.json if exists, otherwise return default counters."""
+    if not os.path.exists(STATS_FILE):
+        return {"total_files": 0, "success": 0, "failed": 0}
+    try:
+        with open(STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("bad stats format")
+        # ensure keys exist
+        data.setdefault("total_files", 0)
+        data.setdefault("success", 0)
+        data.setdefault("failed", 0)
+        return data
+    except Exception:
+        # if corrupted, reset
+        return {"total_files": 0, "success": 0, "failed": 0}
+
+
+def _save_stats(stats: dict) -> None:
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    with open(STATS_FILE, "w", encoding="utf-8") as f:
+        json.dump(stats, f, indent=2)
+
+
+def bump_stats(success: bool) -> None:
+    """Increase counters on each processed file."""
+    stats = _load_stats()
+    stats["total_files"] += 1
+    if success:
+        stats["success"] += 1
+    else:
+        stats["failed"] += 1
+    _save_stats(stats)
+
+
+# ----------------------
+#  CORS
+# ----------------------
+
+@app.after_request
+def add_cors_headers(response):
+    # allow your admin site / Postman / browser apps to call this API
+    response.headers["Access-Control-Allow-Origin"] = "*"  # later: lock to your domain
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+
+# ----------------------
+#  Helpers
+# ----------------------
 
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
+
+def process_single_file(file_storage):
+    """
+    Shared logic:
+    - validate extension
+    - save file
+    - run extract_receipt_to_object
+    - bump stats
+    Returns: (result_dict, http_status)
+    """
+    if not file_storage or file_storage.filename == "":
+        result = {
+            "status": False,
+            "message": "No file selected",
+            "data": {},
+            "status_code": 400,
+        }
+        # You can decide whether to count this; here we don't bump stats.
+        return result, 400
+
+    filename = secure_filename(file_storage.filename)
+
+    if "." not in filename:
+        result = {
+            "status": False,
+            "message": "Missing file extension",
+            "data": {},
+            "status_code": 400,
+        }
+        return result, 400
+
+    ext = filename.rsplit(".", 1)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        result = {
+            "status": False,
+            "message": "Invalid file type. Allowed: pdf, png, jpg, jpeg",
+            "data": {},
+            "status_code": 400,
+        }
+        # Not bumping stats for outright invalid type; you can change if you want
+        return result, 400
+
+    save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    file_storage.save(save_path)
+
+    try:
+        result = extract_receipt_to_object(save_path, ext)
+        # result["status"] should indicate success from your extractor
+        bump_stats(bool(result.get("status")))
+        return result, 200
+    except Exception as e:
+        fail_result = {
+            "status": False,
+            "message": f"Error processing file: {e}",
+            "data": {},
+            "status_code": 500,
+        }
+        bump_stats(False)
+        return fail_result, 500
+
+
+# ----------------------
+#  HTML UI
+# ----------------------
 
 HTML_TEMPLATE = """
 <!doctype html>
@@ -256,41 +368,24 @@ def index():
             success_count = 0
 
             for file in files:
-                if file.filename == "":
+                if not file or file.filename == "":
                     continue
 
-                filename = secure_filename(file.filename)
-                ext = filename.rsplit(".", 1)[1].lower()
-
-                if not allowed_file(filename):
-                    # Optionally, you can record rejected files here
+                # Only send valid file types through our processor
+                if not allowed_file(file.filename):
+                    # skip invalid types silently (UI-only demo)
                     continue
 
                 total_files += 1
 
-                save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-                file.save(save_path)
+                result, _status = process_single_file(file)
 
-                try:
-                    # Get per-file structured object
-                    single_file_obj = extract_receipt_to_object(save_path, ext)
+                # Use invoice_number if present, else fallback to filename
+                invoice_number = result.get("invoice_number") or file.filename
+                processed[invoice_number] = result
 
-                    invoice_number = single_file_obj.get("invoice_number") or filename
-                    processed[invoice_number] = single_file_obj
-                    if single_file_obj.get("status"):
-                        success_count += 1
-
-                except Exception as e:
-                    # If there's an error, still include an entry
-                    processed[filename] = {
-                        "status": False,
-                        "message": f"Error processing file: {e}",
-                        "data": {},
-                        "status_code": 500,
-                        "isInvoice": False,
-                        "invoice_number": None,
-                        "processing_time": "00:00:00",
-                    }
+                if result.get("status"):
+                    success_count += 1
 
             if total_files == 0:
                 error = "No valid files uploaded."
@@ -318,13 +413,12 @@ def health():
 def api_extract():
     # Handle CORS preflight
     if request.method == "OPTIONS":
-        # Just tell the browser "ok, you can POST here"
-        return "", 200
+        resp = jsonify({"status": True, "message": "OK"})
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        return resp, 200
 
-    """
-    Accepts ONE file under form field name 'file'.
-    Returns the same dict that extract_receipt_to_object() creates.
-    """
     if "file" not in request.files:
         return jsonify({
             "status": False,
@@ -334,41 +428,74 @@ def api_extract():
         }), 400
 
     file = request.files.get("file")
+    result, http_status = process_single_file(file)
+    resp = jsonify(result)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    return resp, http_status
 
-    if not file or file.filename == "":
-        return jsonify({
-            "status": False,
-            "message": "No file selected",
-            "data": {},
-            "status_code": 400
-        }), 400
 
-    if not allowed_file(file.filename):
-        return jsonify({
-            "status": False,
-            "message": "File type not allowed. Use pdf/jpg/jpeg/png.",
-            "data": {},
-            "status_code": 400
-        }), 400
+@app.route("/api/stats", methods=["GET"])
+def api_stats():
+    stats = _load_stats()
+    return jsonify({"status": True, "data": stats}), 200
 
-    filename = secure_filename(file.filename)
-    ext = filename.rsplit(".", 1)[1].lower()
 
-    save_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    file.save(save_path)
-
-    try:
-        result = extract_receipt_to_object(save_path, ext)
-        return jsonify(result), 200
-    except Exception as e:
-        return jsonify({
-            "status": False,
-            "message": f"Error processing file: {str(e)}",
-            "data": {},
-            "status_code": 500
-        }), 500
+@app.route("/stats", methods=["GET"])
+def stats_page():
+    stats = _load_stats()
+    html = f"""
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8" />
+      <title>OCR API Stats</title>
+      <style>
+        body {{
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+          background: #020617;
+          color: #e5e7eb;
+          display:flex;
+          align-items:center;
+          justify-content:center;
+          min-height:100vh;
+          margin:0;
+        }}
+        .card {{
+          background:#0f172a;
+          border-radius:16px;
+          padding:24px 28px;
+          box-shadow:0 18px 40px rgba(0,0,0,0.6);
+          border:1px solid rgba(148,163,184,0.25);
+          min-width:260px;
+        }}
+        h1 {{
+          font-size:18px;
+          margin:0 0 16px;
+        }}
+        .row {{
+          display:flex;
+          justify-content:space-between;
+          margin:4px 0;
+          font-size:14px;
+        }}
+        .label {{ color:#9ca3af; }}
+        .val {{ font-weight:600; }}
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>OCR API Stats</h1>
+        <div class="row"><span class="label">Total files</span><span class="val">{stats['total_files']}</span></div>
+        <div class="row"><span class="label">Success</span><span class="val">{stats['success']}</span></div>
+        <div class="row"><span class="label">Failed</span><span class="val">{stats['failed']}</span></div>
+      </div>
+    </body>
+    </html>
+    """
+    return html
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))  # Railway uses PORT env (8080 there)
+    # Railway injects PORT env; fall back to 8080 locally
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
